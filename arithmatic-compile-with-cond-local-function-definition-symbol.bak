@@ -1,0 +1,410 @@
+;; The first three lines of this file were inserted by DrRacket. They record metadata
+;; about the language level of this file in a form that our tools can easily process.
+#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname arithmatic-compile-with-cond-local-function-definition-symbol) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
+;;basic-define:
+(define-struct node(sym val))
+(define sym-bank
+  (list "+" "-" "*" "/" "expt" "max" "min" "abs" "exp" "define" "or" "and" "not" "<" ">" "=" "<=" ">="
+        "cond" "cons" "empty?" "list" "first" "second" "third" "else"))
+
+
+;;Pre-process:
+(define (reform-wrap str)
+  (reform (string->list str)))
+
+(define (reform loc)
+  (cond [(empty? loc) empty]
+        [(or (char=? (first loc) #\space)
+             (char=? (first loc) #\newline))
+         (reform (rest loc))]
+        [(or (char=? (first loc) #\()
+             (char=? (first loc) #\)))
+         (cons (list->string (cons (first loc) empty))
+               (reform (rest loc)))]
+        [(char=? (first loc) #\[)
+         (cons "(" (cons "case" (reform (rest loc))))]
+        [(char=? (first loc) #\])
+         (cons ")" (reform (rest loc)))]
+        [else (cons (find-element loc)
+                    (reform (cut-off loc)))]))
+
+(define (find-element loc)
+  (list->string (find-element-helper loc)))
+
+(define (find-element-helper loc)
+  (cond [(empty? loc) empty]
+        [(char=? (first loc) #\space) empty]
+        [(char=? (first loc) #\)) empty]
+        [(char=? (first loc) #\]) empty]
+        [else (cons (first loc) (find-element-helper (rest loc)))]))
+
+(define (cut-off loc)
+  (cond [(empty? loc) empty]
+        [(char=? (first loc) #\space) loc]
+        [(char=? (first loc) #\)) loc]
+        [(char=? (first loc) #\]) loc]
+        [else (cut-off (rest loc))]))
+
+
+;;Tree Part:
+(define (start-tree los)
+  (cond [(empty? los) "no expression"]
+        [(string=? (first los) "(") (create-func (rest los))]
+        [(string=? (first los) ")") "expect a function or number, but find )"]
+        [else (first los)]))
+
+(define (tree-stream los)
+  (cond [(empty? los) empty]
+        [else (cons (start-tree los) (tree-stream (cutoff-2 (rest los) 1 0)))]))
+
+;;(+) (*)is not allowed, but it is used in compiler
+(define (create-func los)
+  (cond [(or (string=? (first los) "+")
+             (string=? (first los) "*")
+             (string=? (first los) "max")
+             (string=? (first los) "min"))
+         (cond [(string=? (second los) ")") "expect at least 1 argument"]
+               [(string? (find-val (rest los))) (find-val (rest los))]
+               [else (make-node (first los) (find-val (rest los)))])]
+        [(or (string=? (first los) "abs")
+             (string=? (first los) "exp"))
+         (cond [(not (= (count-element (rest los) 1 0) 1)) "expect 1 argument"]
+               [(string? (find-val (rest los))) (find-val (rest los))]
+               [else (make-node (first los) (find-val (rest los)))])]
+        [(or (string=? (first los) "-")
+             (string=? (first los) "/")
+             (string=? (first los) "define")
+             (string=? (first los) "expt"))
+         (cond [(not (= (count-element (rest los) 1 0) 2)) "expect 2 arguments"]
+               [(string? (find-val (rest los))) (find-val (rest los))]
+               [else (make-node (first los) (find-val (rest los)))])]
+        [else (cond [(string? (find-val (rest los))) (find-val (rest los))]
+                    [else (make-node (first los) (find-val (rest los)))])]))
+
+(define (find-val los)
+  (cond [(empty? los) "expect right bracket"]
+        [(string=? (first los) ")")
+         empty]
+        [(string=? (first los) "(")
+         (cond [(not (string? (find-val (cutoff-2 (rest los) 1 0))))
+               (cons (create-func (rest los))
+                     (find-val (cutoff-2 (rest los) 1 0)))]
+               [else (find-val (cutoff-2 (rest los) 1 0))])]
+        [else
+         (cond [(equal? (string->number (first los)) false)
+                (cons (first los) (find-val (rest los)))]
+               [(not (string? (find-val (rest los))))
+                (cons (string->number (first los)) (find-val (rest los)))]
+               [else (find-val (rest los))])]))
+
+(define (cutoff-2 los left-num right-num)
+  (cond [(empty? los) empty]
+        [(= left-num right-num) los]
+        [(string=? (first los) "(")
+         (cutoff-2 (rest los) (add1 left-num) right-num)]
+        [(string=? (first los) ")")
+         (cutoff-2 (rest los) left-num (add1 right-num))]
+        [else (cutoff-2 (rest los) left-num right-num)]))
+
+(define (count-element los left-num right-num)
+  (cond [(empty? los) 0]
+        [(= left-num right-num) 0]
+        [(string=? (first los) ")")
+         (cond [(= left-num (+ 2 right-num))
+                (add1 (count-element (rest los) left-num (add1 right-num)))]
+               [else (count-element (rest los) left-num (add1 right-num))])]
+        [(string=? (first los) "(") (count-element (rest los) (add1 left-num) right-num)]
+        [(= left-num (+ 1 right-num)) (add1 (count-element (rest los) left-num right-num ))]
+        [else (count-element (rest los) left-num right-num )]))
+
+
+;;evaluate
+(define (evaluate-nd tree lst)
+  (local [(define error-id (my-check-error (node-val tree) lst))]
+  (cond [(not (equal? error-id false))
+         error-id]
+        [(string=? (node-sym tree) "+")
+         (eval-t1 + 0 (node-val tree) lst)]
+        [(string=? (node-sym tree) "*")
+         (eval-t1 * 1 (node-val tree) lst)]
+        [(string=? (node-sym tree) "list")
+         (eval-t1 cons empty (node-val tree) lst)]
+        [(string=? (node-sym tree) "min")
+         (eval-t2 min (node-val tree) lst)]
+        [(string=? (node-sym tree) "max")
+         (eval-t2 max (node-val tree) lst)]
+        [(string=? (node-sym tree) "abs")
+         (eval-t3 abs (node-val tree) lst)]
+        [(string=? (node-sym tree) "exp")
+         (eval-t3 exp (node-val tree) lst)]
+        [(string=? (node-sym tree) "not")
+         (eval-t3 not (node-val tree) lst)]
+        [(string=? (node-sym tree) "empty?")
+         (eval-t3 empty? (node-val tree) lst)]
+        [(string=? (node-sym tree) "first")
+         (eval-t3 first (node-val tree) lst)]
+        [(string=? (node-sym tree) "second")
+         (eval-t3 second (node-val tree) lst)]
+        [(string=? (node-sym tree) "expt")
+         (eval-t4 expt (node-val tree) lst)]
+        [(string=? (node-sym tree) "/")
+         (eval-t4 / (node-val tree) lst)]
+        [(string=? (node-sym tree) "-")
+         (eval-t4 - (node-val tree) lst)]
+        [(string=? (node-sym tree) "<")
+         (eval-t4 < (node-val tree) lst)]
+        [(string=? (node-sym tree) ">")
+         (eval-t4 > (node-val tree) lst)]
+        [(string=? (node-sym tree) "=")
+         (eval-t4 = (node-val tree) lst)]
+        [(string=? (node-sym tree) "<=")
+         (eval-t4 <= (node-val tree) lst)]
+        [(string=? (node-sym tree) ">=")
+         (eval-t4 >= (node-val tree) lst)]
+        [(string=? (node-sym tree) "and")
+         (eval-t5 true (node-val tree) lst)]
+        [(string=? (node-sym tree) "or")
+         (eval-t6 false (node-val tree) lst)]
+        [(string=? (node-sym tree) "cond")
+         (eval-cond (node-val tree) lst)]
+        [(string=? (node-sym tree) "cons")
+         (eval-t4 cons (node-val tree) lst)]
+        [(string=? (node-sym tree) "local")
+         (local [(define def-database-local
+                   (merge (sv-def (node-val (first (node-val tree)))) lst))]
+                (evaluate-nd (second (node-val tree))
+                               def-database-local))]
+        [else
+         (cond [(check-key-2 (node-sym tree) lst)
+                (evaluate-nd (func-sub (find-key-2 (node-sym tree) lst) (node-val tree)) lst)])])))
+
+(define (evaluate val lst)
+  (cond [(node? val)
+         (evaluate-nd val lst)]
+        [(number? val)
+         val]
+        [(and (string? val)
+              (check-key val lst))
+         (evaluate (find-key val lst) lst)]
+        [else "variable is not defined"]))
+
+(define (evaluate-stream lot def-database)
+  (cond [(empty? lot) empty]
+        [(node? (first lot))
+         (cond [(string=? (node-sym (first lot)) "define")
+                (evaluate-stream (rest lot) def-database)]
+               [else (cons (evaluate-nd (first lot) def-database)
+                     (evaluate-stream (rest lot) def-database))])]
+        [else (cons (first lot) (evaluate-stream (rest lot) def-database))]))
+
+(define (eval-t1 op bc lon lst) ;;we can use asso lst to merge t1 t2,but not t5,t6
+  (cond [(empty? lon) bc]
+        [else (op (evaluate (first lon) lst) (eval-t1 op bc (rest lon) lst))]))
+
+(define (eval-t2 op lon lst)
+  (cond [(empty? (rest lon)) (evaluate (first lon) lst)]
+        [else (op (evaluate (first lon) lst) (eval-t2 op (rest lon) lst))]))
+
+(define (eval-t3 op lon lst)
+  (op (evaluate (first lon) lst)))
+
+(define (eval-t4 op lon lst)
+  (op (evaluate (first lon) lst) (evaluate (second lon) lst)))
+
+(define (eval-t5 lon lst)
+  (cond [(empty? lon) true]
+        [else (and (evaluate (first lon) lst) (eval-t5 (rest lon) lst))]))
+
+(define (eval-t6 lon lst)
+  (cond [(empty? lon) false]
+        [else (or (evaluate (first lon) lst) (eval-t5 (rest lon) lst))]))
+
+(define (eval-cond lon lst)
+  (cond [(empty? lon) "All conditions are false"] ;;can't be posted yet
+        [(evaluate (first (node-val (first lon))) lst)
+         (evaluate (second (node-val (first lon))) lst)]
+        [(and (string? (first (node-val (first lon))))
+              (string=? (first (node-val (first lon))) "else"))
+         (evaluate (second (node-val (first lon))) lst)]
+        [else (eval-cond (rest lon) lst)]))
+
+(define (my-check-error lst database)
+  (cond [(empty? lst) false]
+        [(node? (first lst))
+         (my-check-error (node-val (first lst)) database)]
+        [(and (string? (first lst))
+              (string=? (first lst) "else"))
+         (my-check-error (rest lst) database)]
+        [(string? (evaluate (first lst) database))
+         (evaluate (first lst) database)]
+        [else (my-check-error (rest lst) database)]))
+
+;;checking/saving definition
+(define (sv-def lot)
+  (cond [(empty? lot) empty]
+        [(node? (first lot))
+         (cond [(string=? (node-sym (first lot)) "define")
+                (cons (node-val (first lot))
+                      (sv-def (rest lot)))]
+               [else (sv-def (rest lot))])]
+        [else (sv-def (rest lot))]))
+
+(define (check-key key lst)
+  (cond [(empty? lst) false]
+        [(and (string? (first (first lst)))
+              (string=? key (first (first lst))))
+         true]
+        [else (check-key key (rest lst))]))
+
+(define (find-key key lst)
+  (cond [(empty? (rest lst)) (second (first lst))]
+        [(and (string? (first (first lst)))
+              (string=? key (first (first lst))))
+         (second (first lst))]
+        [else (find-key key (rest lst))]))
+
+;;function substitution: (case is a built-in string)
+  
+(define (func-sub func-lst val-lst)
+  (local [(define func-v-data (sv-func-v (node-val (first func-lst)) val-lst))]
+    (cond [(string=? (node-sym (second func-lst)) "local")
+                (local [(define local-database
+                          (merge (sv-def (node-val
+                                          (first
+                                           (node-val (second func-lst)))))
+                                 func-v-data))]
+                 (make-node (node-sym (second (node-val (second func-lst))))
+                             (rec-sub (node-val (second (node-val (second func-lst))))
+                                     local-database)))]
+          [else
+           (make-node (node-sym (second func-lst))
+               (rec-sub (node-val (second func-lst)) func-v-data))])))
+  
+(define (rec-sub val-lst temp-vlst)
+  (cond [(empty? val-lst) empty]
+        [(node? (first val-lst))
+         (cond [(string=? (node-sym (first val-lst)) "local")
+                (local [(define local-database
+                          (merge (sv-def (node-val
+                                          (first
+                                           (node-val (first val-lst)))))
+                                 temp-vlst))]
+                        (cond [(node? (second (node-val (first val-lst))))
+                               (cons (make-node (node-sym (second (node-val (first val-lst))))
+                                                (rec-sub (node-val (second (node-val (first val-lst))))
+                                                         local-database))
+                                (rec-sub (rest val-lst) temp-vlst))]
+                              [else
+                               (rec-sub (list (second (node-val (first val-lst)))) local-database)]))]
+               [else
+                (cons (make-node (node-sym (first val-lst))
+                          (rec-sub (node-val (first val-lst)) temp-vlst))
+               (rec-sub (rest val-lst) temp-vlst))])]
+        [(number? (first val-lst))
+          (cons (first val-lst)
+                    (rec-sub (rest val-lst) temp-vlst))]
+        [(check-key (first val-lst) temp-vlst)            ;;function scope
+         (cons (find-key (first val-lst) temp-vlst)
+               (rec-sub (rest val-lst) temp-vlst))]      
+        [else (cons (first val-lst)                       ;;global scope
+                    (rec-sub (rest val-lst) temp-vlst))]))
+
+(define (sv-func-v val-lst1 val-lst2)
+  (cond [(empty? val-lst1) empty]
+        [else (cons (list (first val-lst1) (first val-lst2))
+                    (sv-func-v (rest val-lst1) (rest val-lst2)))]));;can't detect whether v is in sufficient number
+
+(define (check-key-2 str def-lst)
+  (cond [(empty? def-lst) false]
+        [(and (node? (first (first def-lst)))
+              (string=? str (node-sym (first (first def-lst)))))
+         true]
+        [else (check-key-2 str (rest def-lst))]))
+
+(define (find-key-2 str def-lst)
+  (cond [(empty? (rest def-lst))
+         (list (first (first def-lst))
+               (second (first def-lst)))]
+        [(and (node? (first (first def-lst)))
+              (string=? str (node-sym (first (first def-lst)))))
+         (list (first (first def-lst))
+               (second (first def-lst)))]
+        [else (find-key-2 str (rest def-lst))]))
+
+;;helper function for local definition:
+(define (merge database1 database2)
+  (local [(define all-data (append database1 database2))
+          (define (elim-dup database-sum)
+            (cond [(empty? database-sum) empty]
+                  [else (cons (first database-sum)
+                              (elim-dup (del-dup (first database-sum)
+                                                 (rest database-sum))))]))
+          (define (del-dup ref-data database-sum)
+            (cond [(empty? database-sum) empty]
+                  [(string=? (first ref-data)
+                             (first (first database-sum)))
+                   (del-dup ref-data (rest database-sum))]
+                  [else (cons (first (database-sum))
+                              (del-dup ref-data database-sum))]))]
+  (elim-dup all-data)))
+
+
+
+;;Main:
+(define (produce-tree str);; must have one tree
+  (start-tree (reform-wrap str)))
+(define (produce-tlst str)
+  (tree-stream (reform-wrap str)))
+(define (solve-RTK str);; must have one expression and no definition
+  (evaluate (produce-tree str)))
+(define (solve-RKT-stream str)
+  (local [(define tlst (produce-tlst str))
+          (define def-database (sv-def tlst))]
+        (evaluate-stream tlst def-database)))
+
+;;Tests:
+(produce-tree "(+  3   4 (*  3 5  6) (+ 3 (+ 3 6) 5) (* 3 2 1))")
+(produce-tlst "(+ 2 3) (+ 2 4) (+)")
+(count-element (reform-wrap " 2 (+ (())) () (()()) 3") 1 0)
+(count-element (reform-wrap ")") 1 0)
+(produce-tree "(- 1 (+ 2 3))")
+(produce-tlst  "(define a 5)
+                   (define b (+ a 5))
+                   (define (f x y) (+ x y))
+                   (define (g x y z)
+                   (/ x (f y (+ 3 z b))))
+                   (f (g 1 1 1) 1)
+                   (+)
+                   (/ 1 2 3)
+                   (max (min 1 2 3) 2 3)
+                   (abs (* -1 (expt 2 1))")
+(solve-RKT-stream "(define a 5)
+                   (define b (+ a 5))
+                   (define (f x y) (+ x y))
+                   (define (g x y z)
+                   (/ x (f y (+ 3 z b))))
+                   (f (g 1 1 1) 1)
+                   (+)
+                   (/ 1 2 3)
+                   (max (min 1 2 3) 2 3)
+                   (abs (* -1 (expt 2 1))")
+(produce-tree "(local [(define x 1)
+                       (define c 4)])")
+(sv-def (produce-tlst  "(define a 5)
+                  (define b (+ a 5))
+                   (+ a b)"))
+(sv-def (produce-tlst "(define (f x)
+                    (cond [(>= x 3) x]
+                          [else (- x 1)]))
+                   (f 4)"))
+(solve-RKT-stream "(define x 5)
+                   (define (foo x)
+                     (local [(define x 4)]
+                       (+ (local [(define x 3)] (+ 10 x)) 2)))
+                   (foo 1)
+                   ")
+
+(solve-RKT-stream "(define (f x)
+                    (cond [(>= x 3) (< x 5)]
+                          [else (- x 1)]))
+                   (f 4)")
